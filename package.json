@@ -3,7 +3,7 @@
     "version": "1.0.0",
     "displayName": "LiteRT-LM Unity plugin",
     "description": "LiteRT-LM integration with Unity",
-    "unity": "6000.0.55f1",
+    "unity": "6000.0",
     "dependencies": {
         "com.cysharp.unitask": "https://github.com/Cysharp/UniTask.git?path=src/UniTask/Assets/Plugins/UniTask"
     },
