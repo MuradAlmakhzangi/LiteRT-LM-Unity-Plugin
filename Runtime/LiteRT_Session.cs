@@ -91,6 +91,10 @@ public sealed class LiteRT_Session : IDisposable
         }
     }
 
+    public int NumberOfTokens(string prompt)
+    {
+        return litert_lm_native.number_of_tokens(prompt, _parentEngine.Handle);
+    }
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void TokenCallback(IntPtr session, IntPtr token);
