@@ -30,7 +30,8 @@ public sealed class LiteRT_Engine : IDisposable
         {
             throw new Exception($"Session creation failed with code {result}");
         }
-        return new LiteRT_Session(this, session, sessionParams);
+        // return new LiteRT_Session(this, session, sessionParams);
+        return new LiteRT_Session(this, sessionParams);
     }
 
     // Creates a session with the default batch size for LiteRT, (Seems to default to the whole prompt?)
