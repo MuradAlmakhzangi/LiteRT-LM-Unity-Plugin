@@ -4,18 +4,15 @@ public sealed class LiteRT_Engine : IDisposable
 {
     internal IntPtr Handle { get; private set; }
 
-    public static LiteRT_Engine Load(string modelPath, int numThreads, int maxnNumTokens)
+    public static LiteRT_Engine Load(string modelPath, int numThreads)
     {
-        int result = litert_lm_native.create_engine(modelPath, numThreads, out var engine, maxnNumTokens);
+        // Max num tokens is a parameter from a earlier test, no longer works, but simpler to keep as is
+        int result = litert_lm_native.create_engine(modelPath, numThreads, out var engine, -1);
         if (result != 0)
         {
             throw new Exception($"Engine setup failed with code {result}");
         }
         return new LiteRT_Engine(engine);
-    }
-    public static LiteRT_Engine Load(string modelPath, int numThreads)
-    {
-        return Load(modelPath, numThreads, -1);
     }
 
     private LiteRT_Engine(IntPtr handle)
@@ -30,13 +27,12 @@ public sealed class LiteRT_Engine : IDisposable
         {
             throw new Exception($"Session creation failed with code {result}");
         }
-        // return new LiteRT_Session(this, session, sessionParams);
-        return new LiteRT_Session(this, sessionParams);
+        return new LiteRT_Session(this, session, sessionParams);
     }
 
-    // Creates a session with the default batch size for LiteRT, (Seems to default to the whole prompt?)
-    // This is more efficient in certain cases, especiially when compared to low batch sizes, as this does only 1 allocation for the buffers
-    // Where any other batch size has to re-allocate for every token
+    /// <summary>
+    /// Creates a session with the default parameters
+    /// </summary>
     public LiteRT_Session CreateSession()
     {
         return CreateSession(LiteRT_Session.DefaultParams);

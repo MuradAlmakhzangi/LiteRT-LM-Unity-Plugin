@@ -1,13 +1,14 @@
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Text;
 
-public class Conversation
+public class ChatSession
 {
-    private readonly List<Message> _messages = new();
+    private readonly List<ChatMessage> _messages = new();
 
     public void AddMessage(MessageRole role, string content)
     {
-        _messages.Add(new Message(role, content));
+        _messages.Add(new ChatMessage(role, content));
     }
 
     public void Clear()
@@ -15,27 +16,28 @@ public class Conversation
         _messages.Clear();
     }
 
+    /// <summary>
+    /// Adds correct formatting for multi-message conversations
+    /// being sent as a single prompt to the LLM
+    /// </summary>
     public string BuildPrompt()
     {
         var sb = new StringBuilder();
-        foreach (Message msg in _messages)
+        foreach (var msg in _messages)
         {
-            string prefix = msg.Role switch
-            {
-                MessageRole.System => "System: ",
-                MessageRole.User => "User: ",
-                MessageRole.Assistant => "Assistant: ",
-                _ => ""
-            };
-            sb.AppendLine($"{prefix}{msg.Content}");
+            if (msg.Role == MessageRole.User)
+                sb.AppendLine($"<|user|>\n{msg.Content}\n");
+            else if (msg.Role == MessageRole.Assistant)
+                sb.AppendLine($"<|assistant|>\n{msg.Content}\n");
+            else if (msg.Role == MessageRole.System)
+                sb.AppendLine($"<|system|>\n{msg.Content}\n");
         }
-
-        sb.Append("Assistant: "); // cue for next turn
+        sb.Append("<|assistant|>\n"); // cue model to respond
         return sb.ToString();
     }
 }
 public enum MessageRole { System, User, Assistant };
-public record Message(MessageRole Role, string Content);
+public record ChatMessage(MessageRole Role, string Content);
 
 
 namespace System.Runtime.CompilerServices

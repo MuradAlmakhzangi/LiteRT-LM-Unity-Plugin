@@ -6,7 +6,7 @@ using System.Threading.Tasks;
 using AOT;
 using Cysharp.Threading.Tasks;
 
-public sealed class LiteRT_Session
+public sealed class LiteRT_Session : IDisposable
 {
     private static readonly Dictionary<IntPtr, SessionState> _states = new();
 
@@ -29,12 +29,15 @@ public sealed class LiteRT_Session
     private SessionParams _sessionParams;  // not readonly so we can pass ref
     private readonly SemaphoreSlim _generationLock = new SemaphoreSlim(1, 1);
 
-    public Conversation conversation = new Conversation();
+    public ChatSession conversation = new ChatSession();
 
-    internal LiteRT_Session(LiteRT_Engine engine, SessionParams sessionParams)
+    private IntPtr _handle;
+
+    internal LiteRT_Session(LiteRT_Engine engine, IntPtr handle, SessionParams sessionParams)
     {
         _parentEngine = engine;
         _sessionParams = sessionParams;
+        _handle = handle;
     }
 
     /// <summary>
@@ -56,16 +59,15 @@ public sealed class LiteRT_Session
     private async UniTask<string> RunGeneration(string prompt, bool ignoreEOS, int maxTokens, Action<string> onToken)
     {
         await _generationLock.WaitAsync();
-        litert_lm_native.create_session(_parentEngine.Handle, out var handle, ref _sessionParams);
 
         try
         {
             var tcs = new TaskCompletionSource<string>();
-            _states[handle] = new SessionState { OnToken = onToken, Completion = tcs };
+            _states[_handle] = new SessionState { OnToken = onToken, Completion = tcs };
 
             litert_lm_native.generate_text_async(
                 prompt,
-                handle,
+                _handle,
                 ignoreEOS,
                 maxTokens,
                 _tokenCallback,
@@ -76,8 +78,7 @@ public sealed class LiteRT_Session
         }
         finally
         {
-            _states.Remove(handle);
-            litert_lm_native.destroy_session(handle);
+            _states.Remove(_handle);
             _generationLock.Release();
         }
     }
@@ -127,4 +128,9 @@ public sealed class LiteRT_Session
     }
 
     #endregion
+
+    public void Dispose()
+    {
+        litert_lm_native.destroy_session(_handle);
+    }
 }
