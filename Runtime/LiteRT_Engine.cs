@@ -6,8 +6,7 @@ public sealed class LiteRT_Engine : IDisposable
 
     public static LiteRT_Engine Load(string modelPath, int numThreads)
     {
-        // Max num tokens is a parameter from a earlier test, no longer works, but simpler to keep as is
-        int result = litert_lm_native.create_engine(modelPath, numThreads, out var engine, -1);
+        int result = litert_lm_native.create_engine(modelPath, numThreads, out var engine);
         if (result != 0)
         {
             throw new Exception($"Engine setup failed with code {result}");

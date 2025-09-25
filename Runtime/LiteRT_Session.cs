@@ -29,7 +29,6 @@ public sealed class LiteRT_Session : IDisposable
     private SessionParams _sessionParams;  // not readonly so we can pass ref
     private readonly SemaphoreSlim _generationLock = new SemaphoreSlim(1, 1);
 
-    public ChatSession conversation = new ChatSession();
 
     private IntPtr _handle;
 
@@ -116,14 +115,19 @@ public sealed class LiteRT_Session : IDisposable
     private static void OnFinalCallback(IntPtr sessionPtr, IntPtr resultPtr)
     {
         if (!_states.TryGetValue(sessionPtr, out var state)) return;
-
+    
         string result = Marshal.PtrToStringUTF8(resultPtr);
         _states.Remove(sessionPtr);
-
+    
         UniTask.Void(async () =>
         {
             await UniTask.SwitchToMainThread();
-            state.Completion.TrySetResult(result);
+            if (result == "CANCELLED")
+                state.Completion.TrySetCanceled();
+            else if (result == "ERROR")
+                state.Completion.TrySetException(new Exception("Generation failed"));
+            else
+                state.Completion.TrySetResult(result);
         });
     }
 
@@ -131,6 +135,14 @@ public sealed class LiteRT_Session : IDisposable
 
     public void Dispose()
     {
+        if (_handle == IntPtr.Zero) return;
+    
+        // Trigger cancellation, stopping decode loop (only in decode currently)
+        litert_lm_native.cancel_generation(_handle);
+    
+        // Decode loop then fails, free to destory
         litert_lm_native.destroy_session(_handle);
+    
+        _handle = IntPtr.Zero;
     }
 }

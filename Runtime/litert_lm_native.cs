@@ -7,7 +7,7 @@ internal static class litert_lm_native
 
 
     [DllImport(name, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    internal static extern int create_engine(string modelPath, int numThreads, out IntPtr out_engine, int maxnNumTokens);
+    internal static extern int create_engine(string modelPath, int numThreads, out IntPtr out_engine);
 
 
     [DllImport(name, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
@@ -34,4 +34,8 @@ internal static class litert_lm_native
 
     [DllImport(name, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     internal static extern int number_of_tokens(string input, IntPtr engine);
+
+
+    [DllImport(name, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    internal static extern void cancel_generation(IntPtr session);
 }
