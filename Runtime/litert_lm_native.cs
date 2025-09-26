@@ -38,4 +38,8 @@ internal static class litert_lm_native
 
     [DllImport(name, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
     internal static extern void cancel_generation(IntPtr session);
+
+
+    [DllImport(name, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
+    internal static extern int prefill_system_prompt(IntPtr session, string systemPrompt, LiteRT_Session.FinalCallback onFinal);
 }

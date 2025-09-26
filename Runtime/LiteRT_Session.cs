@@ -29,7 +29,6 @@ public sealed class LiteRT_Session : IDisposable
     private SessionParams _sessionParams;  // not readonly so we can pass ref
     private readonly SemaphoreSlim _generationLock = new SemaphoreSlim(1, 1);
 
-
     private IntPtr _handle;
 
     internal LiteRT_Session(LiteRT_Engine engine, IntPtr handle, SessionParams sessionParams)
@@ -115,10 +114,10 @@ public sealed class LiteRT_Session : IDisposable
     private static void OnFinalCallback(IntPtr sessionPtr, IntPtr resultPtr)
     {
         if (!_states.TryGetValue(sessionPtr, out var state)) return;
-    
+
         string result = Marshal.PtrToStringUTF8(resultPtr);
         _states.Remove(sessionPtr);
-    
+
         UniTask.Void(async () =>
         {
             await UniTask.SwitchToMainThread();
@@ -136,13 +135,37 @@ public sealed class LiteRT_Session : IDisposable
     public void Dispose()
     {
         if (_handle == IntPtr.Zero) return;
-    
-        // Trigger cancellation, stopping decode loop (only in decode currently)
+
+        // Trigger cancellation — decode loop will bail
         litert_lm_native.cancel_generation(_handle);
-    
-        // Decode loop then fails, free to destory
+
+        // Free the session immediately. When decode loop checks flag,
+        // it will call OnError -> which you mapped to TrySetCanceled().
         litert_lm_native.destroy_session(_handle);
-    
+
         _handle = IntPtr.Zero;
+    }
+
+    public async UniTask SetSystemPrompt(string systemPrompt)
+    {
+        var tcs = new TaskCompletionSource<string>();
+        _states[_handle] = new SessionState { OnToken = null, Completion = tcs };
+
+        int rc = litert_lm_native.prefill_system_prompt(
+            _handle,
+            systemPrompt,
+            _finalCallback  // reuse same callback as generation
+        );
+
+        if (rc != 0)
+        {
+            throw new Exception($"Prefill system prompt failed: {rc}");
+        }
+
+        string result = await tcs.Task;
+        if (result == "ERROR")
+        {
+            throw new Exception("System prompt prefill failed");
+        }
     }
 }
