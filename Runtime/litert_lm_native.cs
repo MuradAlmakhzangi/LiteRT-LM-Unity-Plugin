@@ -7,7 +7,7 @@ internal static class litert_lm_native
 
 
     [DllImport(name, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]
-    internal static extern int create_engine(string modelPath, int numThreads, out IntPtr out_engine);
+    internal static extern int create_engine(string model_path, int numThreads, int batchSize, bool clearCacheOnPrefill, out IntPtr engine);
 
 
     [DllImport(name, CallingConvention = CallingConvention.Cdecl, ExactSpelling = true)]

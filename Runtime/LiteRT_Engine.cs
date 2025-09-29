@@ -4,9 +4,9 @@ public sealed class LiteRT_Engine : IDisposable
 {
     internal IntPtr Handle { get; private set; }
 
-    public static LiteRT_Engine Load(string modelPath, int numThreads)
+    public static LiteRT_Engine Load(string modelPath, int numThreads, int batchSize, bool clearCacheOnPrefill)
     {
-        int result = litert_lm_native.create_engine(modelPath, numThreads, out var engine);
+        int result = litert_lm_native.create_engine(modelPath, numThreads, batchSize, clearCacheOnPrefill, out var engine);
         if (result != 0)
         {
             throw new Exception($"Engine setup failed with code {result}");

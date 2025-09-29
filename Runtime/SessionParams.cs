@@ -7,19 +7,17 @@ public struct SessionParams
     public float TopP;
     public int Seed;
     public int Temperature;
-    public int BatchSize;
 
     public SessionParams(
         int topK = 40,
         float topP = 0.9f,
         int seed = 0,
-        int temperature = 1,
-        int batchSize = 32)
+        int temperature = 1
+        )
     {
         TopK = topK;
         TopP = topP;
         Seed = seed;
         Temperature = temperature;
-        BatchSize = batchSize;
     }
 }

@@ -16,7 +16,6 @@ public sealed class LiteRT_Session : IDisposable
         TopP = 0.9f,
         Seed = 0,
         Temperature = 1,
-        BatchSize = 32,
     };
 
     private class SessionState

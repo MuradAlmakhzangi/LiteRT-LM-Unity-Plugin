@@ -1,6 +1,6 @@
 {
     "name": "com.arm.litertlm.plugin",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "displayName": "LiteRT-LM Unity plugin",
     "description": "LiteRT-LM integration with Unity",
     "unity": "6000.0",
