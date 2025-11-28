@@ -1,6 +1,6 @@
 {
     "name": "com.arm.litertlm.plugin",
-    "version": "1.0.5",
+    "version": "1.1.0",
     "displayName": "LiteRT-LM Unity plugin",
     "description": "LiteRT-LM integration with Unity",
     "unity": "6000.0",
@@ -11,7 +11,7 @@
         "litert-lm"
     ],
     "author": {
-        "name": "Murad Almakhzangi",
+        "name": "Murad Almakhzangi and Sicong Li",
         "url": "https://github.com/MuradAlmakhzangi/LiteRT-LM-Unity-Plugin"
     }
 }

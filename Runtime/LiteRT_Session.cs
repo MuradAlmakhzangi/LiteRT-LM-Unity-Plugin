@@ -10,7 +10,7 @@ public sealed class LiteRT_Session : IDisposable
 {
     private static readonly Dictionary<IntPtr, SessionState> _states = new();
 
-    public static readonly SessionParams DefaultParams = new SessionParams()
+    public static readonly SamplingParams DefaultParams = new SamplingParams()
     {
         TopK = 40,
         TopP = 0.9f,
@@ -25,15 +25,15 @@ public sealed class LiteRT_Session : IDisposable
     }
 
     private readonly LiteRT_Engine _parentEngine;
-    private SessionParams _sessionParams;  // not readonly so we can pass ref
+    private SamplingParams _SamplingParams;  // not readonly so we can pass ref
     private readonly SemaphoreSlim _generationLock = new SemaphoreSlim(1, 1);
 
     private IntPtr _handle;
 
-    internal LiteRT_Session(LiteRT_Engine engine, IntPtr handle, SessionParams sessionParams)
+    internal LiteRT_Session(LiteRT_Engine engine, IntPtr handle, SamplingParams SamplingParams)
     {
         _parentEngine = engine;
-        _sessionParams = sessionParams;
+        _SamplingParams = SamplingParams;
         _handle = handle;
     }
 
@@ -41,19 +41,6 @@ public sealed class LiteRT_Session : IDisposable
     /// Generate text normally, respecting EOS.
     /// </summary>
     public async UniTask<string> GenerateTextAsync(string prompt, Action<string> onToken = null)
-    {
-        return await RunGeneration(prompt, ignoreEOS: false, maxTokens: -1, onToken);
-    }
-
-    /// <summary>
-    /// Generate text ignoring EOS, up to maxTokens.
-    /// </summary>
-    public async UniTask<string> GenerateTextAsyncIgnoreEOS(string prompt, int maxTokens, Action<string> onToken = null)
-    {
-        return await RunGeneration(prompt, ignoreEOS: true, maxTokens: maxTokens, onToken);
-    }
-
-    private async UniTask<string> RunGeneration(string prompt, bool ignoreEOS, int maxTokens, Action<string> onToken)
     {
         await _generationLock.WaitAsync();
 
@@ -65,8 +52,6 @@ public sealed class LiteRT_Session : IDisposable
             litert_lm_native.generate_text_async(
                 prompt,
                 _handle,
-                ignoreEOS,
-                maxTokens,
                 _tokenCallback,
                 _finalCallback
             );
@@ -120,12 +105,15 @@ public sealed class LiteRT_Session : IDisposable
         UniTask.Void(async () =>
         {
             await UniTask.SwitchToMainThread();
-            if (result == "CANCELLED")
+            if (result == "CANCELLED"){
                 state.Completion.TrySetCanceled();
-            else if (result == "ERROR")
-                state.Completion.TrySetException(new Exception("Generation failed"));
-            else
+            }
+            else if (result.StartsWith("ERROR")){
+                state.Completion.TrySetException(new Exception($"Generation failed, {result}"));
+            }
+            else{
                 state.Completion.TrySetResult(result);
+            }
         });
     }
 
@@ -135,11 +123,15 @@ public sealed class LiteRT_Session : IDisposable
     {
         if (_handle == IntPtr.Zero) return;
 
-        // Trigger cancellation — decode loop will bail
-        litert_lm_native.cancel_generation(_handle);
+        if(_parentEngine.Handle == IntPtr.Zero)
+        {
+            throw new ObjectDisposedException("Session's parent engine has been destroyed before being disposed of");
+        } 
+
+        litert_lm_native.cancel_generation(_handle); // safe call, nothing happens if already invoked
 
         // Free the session immediately. When decode loop checks flag,
-        // it will call OnError -> which you mapped to TrySetCanceled().
+        // it will call OnError -> which is mapped to TrySetCanceled().
         litert_lm_native.destroy_session(_handle);
 
         _handle = IntPtr.Zero;
@@ -156,9 +148,15 @@ public sealed class LiteRT_Session : IDisposable
             _finalCallback  // reuse same callback as generation
         );
 
+        Dictionary<int, string> responseCodeToError = new()
+        {
+            {-1, "Empty system prompt"},
+            {-2, "Invalid session pointer"},
+            {-3, "Failed to start"}
+        };
         if (rc != 0)
         {
-            throw new Exception($"Prefill system prompt failed: {rc}");
+            throw new Exception($"Prefill system prompt failed: {responseCodeToError[rc]}");
         }
 
         string result = await tcs.Task;
