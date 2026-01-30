@@ -22,11 +22,12 @@ public sealed class LiteRT_Engine : IDisposable
     /// <param name="benchmarkTokenDecodeCount">Force a token count to be reached on generations, used for tg128 benchmarking</param>
     /// <returns></returns>
     /// <exception cref="Exception"></exception>
-    public static LiteRT_Engine Load(string modelPath, int numThreads, int batchSize, bool clearCacheOnPrefill = false, int benchmarkTokenDecodeCount = -1)
+    public static LiteRT_Engine Load(string modelPath, int numThreads, int batchSize, bool clearCacheOnPrefill = false, int benchmarkTokenPrefillCount = -1, int benchmarkTokenDecodeCount = -1)
     {
         int result = litert_lm_native.create_engine(modelPath, numThreads,
                                                     batchSize, clearCacheOnPrefill,
-                                                    benchmarkTokenDecodeCount, out var engine);
+                                                    benchmarkTokenPrefillCount, benchmarkTokenDecodeCount, 
+                                                    out var engine);
 
         
         if (result != 0)
@@ -41,14 +42,19 @@ public sealed class LiteRT_Engine : IDisposable
         Handle = handle;
     }
 
-    public LiteRT_Session CreateSession(SamplingParams SamplingParams)
+    public LiteRT_Session CreateSession(SamplingParams SamplingParams, int maxOutputTokens)
     {
-        int result = litert_lm_native.create_session(Handle, out var session, ref SamplingParams);
+        int result = litert_lm_native.create_session(Handle, out var session, maxOutputTokens, ref SamplingParams);
         if (result != 0)
         {
             throw new Exception($"Session creation failed with code {result}");
         }
-        return new LiteRT_Session(this, session, SamplingParams);
+        return new LiteRT_Session(this, session);
+    }
+
+    public LiteRT_Session CreateSession(SamplingParams SamplingParams)
+    {
+        return CreateSession(SamplingParams, -1);
     }
 
     /// <summary>
@@ -56,9 +62,15 @@ public sealed class LiteRT_Engine : IDisposable
     /// </summary>
     public LiteRT_Session CreateSession()
     {
-        return CreateSession(LiteRT_Session.DefaultParams);
+        return CreateSession(LiteRT_Session.DefaultSamplingParams, -1);
     }
 
+    public void WaitUntilDone(int timeoutMs = 10000)
+    {
+        if (Handle == IntPtr.Zero) return;
+        litert_lm_native.wait_until_done(Handle, timeoutMs);
+    }
+    
     public void Dispose()
     {
         if (Handle != IntPtr.Zero)
@@ -68,8 +80,4 @@ public sealed class LiteRT_Engine : IDisposable
         }
     }
 
-    public int NumberOfTokens(string text)
-    {
-        return litert_lm_native.number_of_tokens(text, Handle);
-    }
 }

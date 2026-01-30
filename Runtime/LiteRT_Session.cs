@@ -1,168 +1,214 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
-using System.Threading.Tasks;
 using AOT;
 using Cysharp.Threading.Tasks;
 
 public sealed class LiteRT_Session : IDisposable
 {
-    private static readonly Dictionary<IntPtr, SessionState> _states = new();
+    private static readonly ConcurrentDictionary<IntPtr, SessionState> _states = new();
 
-    public static readonly SamplingParams DefaultParams = new SamplingParams()
-    {
-        TopK = 40,
-        TopP = 0.9f,
-        Seed = 0,
-        Temperature = 1,
-    };
+    public static readonly SamplingParams DefaultSamplingParams = new();
 
-    private class SessionState
+    private sealed class SessionState
     {
         public Action<string> OnToken;
-        public TaskCompletionSource<string> Completion;
+        public UniTaskCompletionSource<int> Completion;
+
+        public readonly Queue<string> TokenQueue = new(128);
+        public bool DrainScheduled;
+        public readonly object Gate = new();
     }
 
     private readonly LiteRT_Engine _parentEngine;
-    private SamplingParams _SamplingParams;  // not readonly so we can pass ref
-    private readonly SemaphoreSlim _generationLock = new SemaphoreSlim(1, 1);
-
+    private readonly SemaphoreSlim _generationLock = new(1, 1);
     private IntPtr _handle;
 
-    internal LiteRT_Session(LiteRT_Engine engine, IntPtr handle, SamplingParams SamplingParams)
+    internal LiteRT_Session(LiteRT_Engine engine, IntPtr handle)
     {
         _parentEngine = engine;
-        _SamplingParams = SamplingParams;
         _handle = handle;
     }
 
     /// <summary>
-    /// Generate text normally, respecting EOS.
+    /// Streams tokens via onToken. Returns a completion code (0 = success).
+    /// Throws on error codes; cancelled maps to task cancellation.
     /// </summary>
-    public async UniTask<string> GenerateTextAsync(string prompt, Action<string> onToken = null)
+    public async UniTask<ResponseCode> GenerateTextAsync(string prompt, Action<string> onToken = null)
     {
         await _generationLock.WaitAsync();
 
+        var state = new SessionState
+        {
+            OnToken = onToken,
+            Completion = new UniTaskCompletionSource<int>()
+        };
+
+        _states[_handle] = state;
+
         try
         {
-            var tcs = new TaskCompletionSource<string>();
-            _states[_handle] = new SessionState { OnToken = onToken, Completion = tcs };
+            litert_lm_native.generate_text_async(prompt, _handle, _tokenCallback, _finalCallback);
 
-            litert_lm_native.generate_text_async(
-                prompt,
-                _handle,
-                _tokenCallback,
-                _finalCallback
-            );
+            var code = (ResponseCode)await state.Completion.Task;
 
-            return await tcs.Task;
+            if (code == ResponseCode.kCancelled)
+                throw new OperationCanceledException("Generation cancelled.");
+
+            if (code != ResponseCode.kOk)
+                throw new Exception($"Generation failed: {code}");
+
+            return code;
         }
         finally
         {
-            _states.Remove(_handle);
             _generationLock.Release();
         }
     }
 
-    public int NumberOfTokens(string prompt)
+    public async UniTask<ResponseCode> SetSystemPromptAsync(string systemPrompt)
     {
-        return litert_lm_native.number_of_tokens(prompt, _parentEngine.Handle);
+        await _generationLock.WaitAsync();
+
+        var state = new SessionState
+        {
+            OnToken = null,
+            Completion = new UniTaskCompletionSource<int>()
+        };
+
+        _states[_handle] = state;
+
+        try
+        {
+            int rc = litert_lm_native.prefill_system_prompt(
+                _handle,
+                systemPrompt,
+                _finalCallback
+            );
+
+            if (rc != 0)
+            {
+                // startup failed, clean up immediately
+                _states.TryRemove(_handle, out _);
+                throw new Exception($"Prefill failed to start (rc={rc})");
+            }
+
+            ResponseCode code = (ResponseCode)await state.Completion.Task;
+
+            if (code == ResponseCode.kCancelled)
+            {
+                throw new OperationCanceledException("Prefill cancelled.");
+            }
+
+            if (code != ResponseCode.kOk)
+            {
+                throw new Exception($"Prefill failed: {code}");
+            }
+
+            return code;
+        }
+        finally
+        {
+            _generationLock.Release();
+        }
     }
 
     #region Native Callbacks
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate void TokenCallback(IntPtr session, IntPtr token);
+    internal unsafe delegate void TokenCallback(IntPtr session, byte* data, int length);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate void FinalCallback(IntPtr session, IntPtr result);
+    internal delegate void FinalCallback(IntPtr session, int result);
 
-    private static readonly TokenCallback _tokenCallback = OnTokenCallback;
-    private static readonly FinalCallback _finalCallback = OnFinalCallback;
+    internal static readonly unsafe TokenCallback _tokenCallback = OnTokenCallback;
+    internal static readonly FinalCallback _finalCallback = OnFinalCallback;
 
     [MonoPInvokeCallback(typeof(TokenCallback))]
-    private static void OnTokenCallback(IntPtr sessionPtr, IntPtr tokenPtr)
+    private static unsafe void OnTokenCallback(IntPtr sessionPtr, byte* data, int length)
     {
         if (!_states.TryGetValue(sessionPtr, out var state)) return;
+        if (data == null || length <= 0) return;
 
-        string token = Marshal.PtrToStringUTF8(tokenPtr);
-        UniTask.Void(async () =>
+        string token = Encoding.UTF8.GetString(new ReadOnlySpan<byte>(data, length));
+
+        bool schedule = false;
+        lock (state.Gate)
         {
-            await UniTask.SwitchToMainThread();
-            state.OnToken?.Invoke(token);
-        });
+            state.TokenQueue.Enqueue(token);
+            if (!state.DrainScheduled)
+            {
+                state.DrainScheduled = true;
+                schedule = true;
+            }
+        }
+
+        if (schedule)
+        {
+            // calls safe method that does the await
+            ScheduleDrainOnMainThread(sessionPtr, state).Forget();
+        }
+    }
+
+    private static async UniTaskVoid ScheduleDrainOnMainThread(IntPtr sessionPtr, SessionState state)
+    {
+        await UniTask.SwitchToMainThread();
+
+        while (true)
+        {
+            string next;
+            Action<string> cb;
+
+            lock (state.Gate)
+            {
+                if (state.TokenQueue.Count == 0)
+                {
+                    state.DrainScheduled = false;
+                    return;
+                }
+                next = state.TokenQueue.Dequeue();
+                cb = state.OnToken;
+            }
+
+            cb?.Invoke(next);
+        }
     }
 
     [MonoPInvokeCallback(typeof(FinalCallback))]
-    private static void OnFinalCallback(IntPtr sessionPtr, IntPtr resultPtr)
+    private static void OnFinalCallback(IntPtr sessionPtr, int result)
     {
-        if (!_states.TryGetValue(sessionPtr, out var state)) return;
-
-        string result = Marshal.PtrToStringUTF8(resultPtr);
-        _states.Remove(sessionPtr);
-
-        UniTask.Void(async () =>
-        {
-            await UniTask.SwitchToMainThread();
-            if (result == "CANCELLED"){
-                state.Completion.TrySetCanceled();
-            }
-            else if (result.StartsWith("ERROR")){
-                state.Completion.TrySetException(new Exception($"Generation failed, {result}"));
-            }
-            else{
-                state.Completion.TrySetResult(result);
-            }
-        });
+        if (!_states.TryRemove(sessionPtr, out var state)) return;
+        state.Completion.TrySetResult(result);
     }
-
     #endregion
 
     public void Dispose()
     {
         if (_handle == IntPtr.Zero) return;
 
-        if(_parentEngine.Handle == IntPtr.Zero)
+        _generationLock.Wait();
+        try
         {
-            throw new ObjectDisposedException("Session's parent engine has been destroyed before being disposed of");
-        } 
+            if (_parentEngine.Handle == IntPtr.Zero) {
+                throw new ObjectDisposedException("Session's parent engine has been destroyed before being disposed of");
+            }
 
-        litert_lm_native.cancel_generation(_handle); // safe call, nothing happens if already invoked
+            // Only cancel if a request is actually in-flight.
+            if (_states.ContainsKey(_handle)) {
+                litert_lm_native.cancel_generation(_handle);
+            }
 
-        // Free the session immediately. When decode loop checks flag,
-        // it will call OnError -> which is mapped to TrySetCanceled().
-        litert_lm_native.destroy_session(_handle);
+            _parentEngine.WaitUntilDone(10000);
 
-        _handle = IntPtr.Zero;
-    }
-
-    public async UniTask SetSystemPrompt(string systemPrompt)
-    {
-        var tcs = new TaskCompletionSource<string>();
-        _states[_handle] = new SessionState { OnToken = null, Completion = tcs };
-
-        int rc = litert_lm_native.prefill_system_prompt(
-            _handle,
-            systemPrompt,
-            _finalCallback  // reuse same callback as generation
-        );
-
-        Dictionary<int, string> responseCodeToError = new()
-        {
-            {-1, "Empty system prompt"},
-            {-2, "Invalid session pointer"},
-            {-3, "Failed to start"}
-        };
-        if (rc != 0)
-        {
-            throw new Exception($"Prefill system prompt failed: {responseCodeToError[rc]}");
+            litert_lm_native.destroy_session(_handle);
+            _handle = IntPtr.Zero;
         }
-
-        string result = await tcs.Task;
-        if (result == "ERROR")
+        finally
         {
-            throw new Exception("System prompt prefill failed");
+            _generationLock.Release();
         }
     }
 }
