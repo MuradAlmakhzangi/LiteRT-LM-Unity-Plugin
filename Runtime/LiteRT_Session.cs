@@ -17,15 +17,12 @@ public sealed class LiteRT_Session : IDisposable
     {
         public Action<string> OnToken;
         public UniTaskCompletionSource<int> Completion;
-
-        public readonly Queue<string> TokenQueue = new(128);
-        public bool DrainScheduled;
-        public readonly object Gate = new();
     }
 
     private readonly LiteRT_Engine _parentEngine;
-    private readonly SemaphoreSlim _generationLock = new(1, 1);
+    // removed semaphore as requested
     private IntPtr _handle;
+    private int _disposed; // 0 == false, 1 == true
 
     internal LiteRT_Session(LiteRT_Engine engine, IntPtr handle)
     {
@@ -39,81 +36,56 @@ public sealed class LiteRT_Session : IDisposable
     /// </summary>
     public async UniTask<ResponseCode> GenerateTextAsync(string prompt, Action<string> onToken = null)
     {
-        await _generationLock.WaitAsync();
-
-        var state = new SessionState
-        {
+        if(_handle == IntPtr.Zero) throw new ObjectDisposedException(nameof(LiteRT_Session));
+        if(Interlocked.CompareExchange(ref _disposed, 0, 0) == 1) throw new ObjectDisposedException(nameof(LiteRT_Session));
+    
+        var state = new SessionState {
             OnToken = onToken,
             Completion = new UniTaskCompletionSource<int>()
         };
-
+    
         _states[_handle] = state;
+    
+        litert_lm_native.generate_text_async(prompt, _handle, _tokenCallback, _finalCallback);
 
-        try
-        {
-            litert_lm_native.generate_text_async(prompt, _handle, _tokenCallback, _finalCallback);
-
-            var code = (ResponseCode)await state.Completion.Task;
-
-            if (code == ResponseCode.kCancelled)
-                throw new OperationCanceledException("Generation cancelled.");
-
-            if (code != ResponseCode.kOk)
-                throw new Exception($"Generation failed: {code}");
-
-            return code;
-        }
-        finally
-        {
-            _generationLock.Release();
-        }
+        int codeInt = await state.Completion.Task;
+    
+        // continuation from Completion can be on native thread
+        await UniTask.SwitchToMainThread();
+    
+        var code = (ResponseCode)codeInt;
+    
+        if(code == ResponseCode.kCancelled) throw new OperationCanceledException("Generation cancelled.");
+        if(code != ResponseCode.kOk) throw new Exception($"Generation failed: {code}");
+        return code;
     }
-
+    
     public async UniTask<ResponseCode> SetSystemPromptAsync(string systemPrompt)
     {
-        await _generationLock.WaitAsync();
-
-        var state = new SessionState
-        {
+        if(_handle == IntPtr.Zero) throw new ObjectDisposedException(nameof(LiteRT_Session));
+        if(Interlocked.CompareExchange(ref _disposed, 0, 0) == 1) throw new ObjectDisposedException(nameof(LiteRT_Session));
+    
+        var state = new SessionState {
             OnToken = null,
             Completion = new UniTaskCompletionSource<int>()
         };
-
+    
         _states[_handle] = state;
-
-        try
-        {
-            int rc = litert_lm_native.prefill_system_prompt(
-                _handle,
-                systemPrompt,
-                _finalCallback
-            );
-
-            if (rc != 0)
-            {
-                // startup failed, clean up immediately
-                _states.TryRemove(_handle, out _);
-                throw new Exception($"Prefill failed to start (rc={rc})");
-            }
-
-            ResponseCode code = (ResponseCode)await state.Completion.Task;
-
-            if (code == ResponseCode.kCancelled)
-            {
-                throw new OperationCanceledException("Prefill cancelled.");
-            }
-
-            if (code != ResponseCode.kOk)
-            {
-                throw new Exception($"Prefill failed: {code}");
-            }
-
-            return code;
+    
+        int rc = litert_lm_native.prefill_system_prompt(_handle, systemPrompt, _finalCallback);
+        if(rc != 0) {
+            _states.TryRemove(_handle, out _);
+            throw new Exception($"Prefill failed to start (rc={rc})");
         }
-        finally
-        {
-            _generationLock.Release();
-        }
+
+        int codeInt = await state.Completion.Task;
+    
+        await UniTask.SwitchToMainThread();
+    
+        var code = (ResponseCode)codeInt;
+        if(code == ResponseCode.kCancelled) throw new OperationCanceledException("Prefill cancelled.");
+        if(code != ResponseCode.kOk) throw new Exception($"Prefill failed: {code}");
+        return code;
     }
 
     #region Native Callbacks
@@ -130,85 +102,97 @@ public sealed class LiteRT_Session : IDisposable
     [MonoPInvokeCallback(typeof(TokenCallback))]
     private static unsafe void OnTokenCallback(IntPtr sessionPtr, byte* data, int length)
     {
-        if (!_states.TryGetValue(sessionPtr, out var state)) return;
+        // quick guards to avoid processing if we don't have state
+        if (sessionPtr == IntPtr.Zero) return;
         if (data == null || length <= 0) return;
+        if (!_states.TryGetValue(sessionPtr, out _)) return;
 
+        // copy token bytes to managed string (cheap)
         string token = Encoding.UTF8.GetString(new ReadOnlySpan<byte>(data, length));
 
-        bool schedule = false;
-        lock (state.Gate)
-        {
-            state.TokenQueue.Enqueue(token);
-            if (!state.DrainScheduled)
-            {
-                state.DrainScheduled = true;
-                schedule = true;
-            }
-        }
-
-        if (schedule)
-        {
-            // calls safe method that does the await
-            ScheduleDrainOnMainThread(sessionPtr, state).Forget();
-        }
+        // Fire-and-forget a safe async method that switches to main thread and invokes callback.
+        // We intentionally do NOT await inside the native callback; we immediately schedule the work.
+        // Using .Forget() is OK here — the token delivery is best-effort; the Completion/Dispose logic
+        // handles race conditions separately.
+        ProcessTokenAsync(sessionPtr, token).Forget();
     }
 
-    private static async UniTaskVoid ScheduleDrainOnMainThread(IntPtr sessionPtr, SessionState state)
+    private static async UniTask ProcessTokenAsync(IntPtr sessionPtr, string token)
     {
+        // switch to main thread
         await UniTask.SwitchToMainThread();
 
-        while (true)
+        // Get a snapshot of the OnToken delegate in case state changed concurrently.
+        Action<string> cb = null;
+        if (_states.TryGetValue(sessionPtr, out var curState))
         {
-            string next;
-            Action<string> cb;
+            cb = curState.OnToken;
+        }
 
-            lock (state.Gate)
-            {
-                if (state.TokenQueue.Count == 0)
-                {
-                    state.DrainScheduled = false;
-                    return;
-                }
-                next = state.TokenQueue.Dequeue();
-                cb = state.OnToken;
-            }
-
-            cb?.Invoke(next);
+        try
+        {
+            cb?.Invoke(token);
+        }
+        catch (Exception ex)
+        {
+            // don't let user exceptions bubble into UniTask machinery unobserved.
+            UnityEngine.Debug.LogException(ex);
         }
     }
 
     [MonoPInvokeCallback(typeof(FinalCallback))]
     private static void OnFinalCallback(IntPtr sessionPtr, int result)
     {
+        if (sessionPtr == IntPtr.Zero) return;
+
         if (!_states.TryRemove(sessionPtr, out var state)) return;
+
+        // complete the awaiting task
         state.Completion.TrySetResult(result);
     }
     #endregion
 
     public void Dispose()
     {
+        // idempotent dispose
+        if (Interlocked.Exchange(ref _disposed, 1) == 1) return;
+
         if (_handle == IntPtr.Zero) return;
 
-        _generationLock.Wait();
+        // best-effort: cancel generation if active
         try
         {
-            if (_parentEngine.Handle == IntPtr.Zero) {
-                throw new ObjectDisposedException("Session's parent engine has been destroyed before being disposed of");
-            }
-
-            // Only cancel if a request is actually in-flight.
-            if (_states.ContainsKey(_handle)) {
+            if (_states.ContainsKey(_handle))
+            {
                 litert_lm_native.cancel_generation(_handle);
             }
+        }
+        catch (Exception ex)
+        {
+            UnityEngine.Debug.LogWarning($"Exception while cancelling generation: {ex}");
+        }
 
+        // wait for engine to finish any threads it needs to (keeps previous behavior)
+        try
+        {
             _parentEngine.WaitUntilDone(10000);
+        }
+        catch (Exception ex)
+        {
+            UnityEngine.Debug.LogWarning($"WaitUntilDone threw: {ex}");
+        }
 
+        try
+        {
             litert_lm_native.destroy_session(_handle);
-            _handle = IntPtr.Zero;
+        }
+        catch (Exception ex)
+        {
+            UnityEngine.Debug.LogWarning($"destroy_session threw: {ex}");
         }
         finally
         {
-            _generationLock.Release();
+            _handle = IntPtr.Zero;
         }
     }
 }
