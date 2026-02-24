@@ -6,14 +6,14 @@ public struct SamplingParams
     public int TopK;
     public float TopP;
     public int Seed;
-    public int Temperature;
+    public float Temperature;
     public SamplingType SamplingType;
 
     public SamplingParams(
         int topK = 40,
         float topP = 0.9f,
         int seed = 0,
-        int temperature = 1,
+        float temperature = 1,
         SamplingType samplingType = SamplingType.Default
         )
     {
