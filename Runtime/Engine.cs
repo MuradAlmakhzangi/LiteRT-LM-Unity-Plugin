@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-public sealed class LiteRT_Engine : IDisposable
+public sealed class Engine : IDisposable
 {
     internal IntPtr Handle { get; private set; }
     private readonly static Dictionary<int, string> createEngineResponseToErrorMessage = new()
@@ -22,7 +22,7 @@ public sealed class LiteRT_Engine : IDisposable
     /// <param name="benchmarkTokenDecodeCount">Force a token count to be reached on generations, used for tg128 benchmarking</param>
     /// <returns></returns>
     /// <exception cref="Exception"></exception>
-    public static LiteRT_Engine Load(string modelPath, int numThreads, int batchSize, bool clearCacheOnPrefill = false, int benchmarkTokenPrefillCount = -1, int benchmarkTokenDecodeCount = -1)
+    public static Engine Load(string modelPath, int numThreads, int batchSize, bool clearCacheOnPrefill = false, int benchmarkTokenPrefillCount = -1, int benchmarkTokenDecodeCount = -1)
     {
         int result = litert_lm_native.create_engine(modelPath, numThreads,
                                                     batchSize, clearCacheOnPrefill,
@@ -34,35 +34,12 @@ public sealed class LiteRT_Engine : IDisposable
         {
             throw new Exception($"Engine setup failed: {createEngineResponseToErrorMessage[result]}");
         }
-        return new LiteRT_Engine(engine);
+        return new Engine(engine);
     }
 
-    private LiteRT_Engine(IntPtr handle)
+    private Engine(IntPtr handle)
     {
         Handle = handle;
-    }
-
-    public LiteRT_Session CreateSession(SamplingParams SamplingParams, int maxOutputTokens)
-    {
-        int result = litert_lm_native.create_session(Handle, out var session, maxOutputTokens, ref SamplingParams);
-        if (result != 0)
-        {
-            throw new Exception($"Session creation failed with code {result}");
-        }
-        return new LiteRT_Session(this, session);
-    }
-
-    public LiteRT_Session CreateSession(SamplingParams SamplingParams)
-    {
-        return CreateSession(SamplingParams, -1);
-    }
-
-    /// <summary>
-    /// Creates a session with the default parameters
-    /// </summary>
-    public LiteRT_Session CreateSession()
-    {
-        return CreateSession(LiteRT_Session.DefaultSamplingParams, -1);
     }
 
     public void WaitUntilDone(int timeoutMs = 10000)
@@ -79,5 +56,4 @@ public sealed class LiteRT_Engine : IDisposable
             Handle = IntPtr.Zero;
         }
     }
-
 }
