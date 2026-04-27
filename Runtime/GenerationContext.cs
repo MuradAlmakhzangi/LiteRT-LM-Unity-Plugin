@@ -75,17 +75,15 @@ public abstract class GenerationContext : IDisposable
         {
             if (cancellationToken.CanBeCanceled && SupportsCancellation)
             {
-                registration = cancellationToken.Register(static contextHandle =>
+                registration = cancellationToken.Register(() =>
                 {
-                    IntPtr activeHandle = (IntPtr)contextHandle;
-
-                    if (!_states.ContainsKey(activeHandle))
+                    if (!_states.ContainsKey(handle))
                     {
                         return;
                     }
 
-                    CancelOperation(activeHandle);
-                }, handle);
+                    CancelOperation(handle);
+                });
             }
 
             startOperation(handle, tokenCallback, finalCallback);
@@ -256,8 +254,5 @@ public abstract class GenerationContext : IDisposable
 
     protected abstract void DestroyHandle(IntPtr handle);
 
-    protected static void CancelOperation(IntPtr handle)
-    {
-        litert_lm_native.cancel_generation(handle);
-    }
+    protected abstract void CancelOperation(IntPtr handle);
 }

@@ -25,13 +25,18 @@ public sealed class Conversation : GenerationContext
         litert_lm_native.destroy_conversation(handle);
     }
 
-
+    protected override void CancelOperation(IntPtr handle)
+    {
+        litert_lm_native.cancel_conversation_generation(handle);
+    }
+    
     public static Conversation Create(
         Engine engine,
         SamplingParams samplingParams,
         string systemPrompt = "",
         int maxOutputTokens = -1,
-        bool prefillSystemPromptOnInit = false)
+        bool prefillSystemPromptOnInit = true,
+        bool enableThinking = false)
     {
         int result = litert_lm_native.create_conversation(
             engine.Handle,
@@ -39,7 +44,8 @@ public sealed class Conversation : GenerationContext
             ref samplingParams,
             systemPrompt ?? string.Empty,
             maxOutputTokens,
-            prefillSystemPromptOnInit);
+            prefillSystemPromptOnInit,
+            enableThinking);
 
         if (result != 0)
         {

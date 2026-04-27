@@ -1,5 +1,4 @@
 using System;
-using System.Runtime.InteropServices;
 using System.Threading;
 using Cysharp.Threading.Tasks;
 
@@ -38,6 +37,11 @@ public sealed class Session : GenerationContext
     protected override void DestroyHandle(IntPtr handle)
     {
         litert_lm_native.destroy_session(handle);
+    }
+
+    protected override void CancelOperation(IntPtr handle)
+    {
+        litert_lm_native.cancel_session_generation(handle);
     }
 
     public static Session Create(Engine engine, SamplingParams SamplingParams, int maxOutputTokens)
