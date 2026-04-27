@@ -17,16 +17,22 @@ public class LLM : IDisposable
     private readonly SamplingParams _samplingParams;
     private readonly int _maxOutputTokens;
     private readonly bool _prefillSystemPromptOnInit;
+    private readonly bool _enableThinking;
 
-    public LLM(string systemPrompt, SamplingParams samplingParams, int maxOutputTokens, bool prefillSystemPromptOnInit)
+    public LLM(string systemPrompt,
+               SamplingParams samplingParams,
+               int maxOutputTokens,
+               bool prefillSystemPromptOnInit,
+               bool enableThinking)
     {
         _systemPrompt = systemPrompt;
         _samplingParams = samplingParams;
         _maxOutputTokens = maxOutputTokens;
         _prefillSystemPromptOnInit = prefillSystemPromptOnInit;
+        _enableThinking = enableThinking; 
     }    
 
-    public LLM(string systemPrompt) : this(systemPrompt, Session.DefaultSamplingParams, -1, true)
+    public LLM(string systemPrompt) : this(systemPrompt, Session.DefaultSamplingParams, -1, true, false)
     {}
 
 
@@ -39,19 +45,28 @@ public class LLM : IDisposable
     /// <param name="benchmarkPrefillCount">Number of prefill tokens for benchmarking</param>
     /// <param name="benchmarkDecodeTokenCount">Number of decode tokens for benchmarking</param>
     /// <returns></returns>
-    public UniTask LoadFromStreamingAssets(string filepath, int threads, int batches, int benchmarkPrefillCount = -1, int benchmarkDecodeTokenCount = -1)
-    {
-        return LoadFromStreamingAssets(filepath, threads, batches, Session.DefaultSamplingParams, benchmarkPrefillCount, benchmarkDecodeTokenCount);
-    }
-
-    public async UniTask LoadFromStreamingAssets(string filepath, int threads, int batches, SamplingParams samplingParams, int benchmarkPrefillCount, int benchmarkDecodeTokenCount)
+    public async UniTask LoadFromStreamingAssets(string filepath, int threads, int batches, int benchmarkPrefillCount = -1, int benchmarkDecodeTokenCount = -1)
     {
         this.Dispose(); // Ensure safety when reloading
         string modelPath = await ResolveModelPath(filepath);
 
-        _engine = Engine.Load(modelPath, threads, batches, false, benchmarkPrefillCount, benchmarkDecodeTokenCount);
-
-        _conversation = Conversation.Create(_engine, _samplingParams, _systemPrompt, _maxOutputTokens, _prefillSystemPromptOnInit);
+        _engine = Engine.Load(
+            modelPath,
+            threads,
+            batches,
+            false,
+            benchmarkPrefillCount,
+            benchmarkDecodeTokenCount
+        );
+        
+        _conversation = Conversation.Create(
+            _engine,
+            _samplingParams,
+            _systemPrompt,
+            _maxOutputTokens,
+            _prefillSystemPromptOnInit,
+            _enableThinking
+        );
     }
 
     public static async UniTask<string> ResolveModelPath(string filePath)

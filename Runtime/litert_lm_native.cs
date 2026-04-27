@@ -30,7 +30,8 @@ internal static class litert_lm_native
         ref SamplingParams samplingParams,
         [MarshalAs(UnmanagedType.LPUTF8Str)] string systemPrompt,
         int maxOutputTokens,
-        bool prefillSystemPromptOnInit);
+        bool prefillSystemPromptOnInit,
+        bool enableThinking);
     
     [DllImport(LibraryName, CallingConvention = NativeCallingConvention, ExactSpelling = true)]
     internal static extern void generate_text_async(
@@ -57,7 +58,10 @@ internal static class litert_lm_native
     internal static extern void destroy_conversation(IntPtr conversation);
 
     [DllImport(LibraryName, CallingConvention = NativeCallingConvention, ExactSpelling = true)]
-    internal static extern void cancel_generation(IntPtr session);
+    internal static extern void cancel_session_generation(IntPtr session);
+
+    [DllImport(LibraryName, CallingConvention = NativeCallingConvention, ExactSpelling = true)]
+    internal static extern void cancel_conversation_generation(IntPtr conversation);
 
     [DllImport(LibraryName, CallingConvention = NativeCallingConvention, ExactSpelling = true)]
     internal static extern int prefill_system_prompt(
